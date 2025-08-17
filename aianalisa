@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trading AI Web App</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial"></script>
+<style>
+  body { font-family: sans-serif; background:#0f172a; color:white; display:flex; flex-direction:column; align-items:center; padding:1rem; }
+  h1 { margin-bottom:0.5rem; text-align:center; }
+  #signal { font-weight:bold; font-size:1.2rem; margin:0.5rem 0; }
+  #balance { font-weight:bold; margin-bottom:0.5rem; }
+  canvas { background:#f1f5f9; border-radius:0.5rem; margin-bottom:1rem; width:100% !important; }
+  button, select, input { padding:0.5rem 1rem; margin:0.3rem; border:none; border-radius:0.5rem; background-color:#dc2626; color:white; font-weight:bold; cursor:pointer; }
+  label { margin:0.2rem; }
+</style>
+</head>
+<body>
+
+<h1>Trading AI Web App</h1>
+
+<label for="pairSelect">Pilih Pair Crypto:</label>
+<select id="pairSelect">
+  <option value="BTCUSDT">BTC/USDT</option>
+  <option value="ETHUSDT">ETH/USDT</option>
+  <option value="BNBUSDT">BNB/USDT</option>
+</select>
+
+<div>
+  <label for="ma5Input">MA5:</label>
+  <input type="number" id="ma5Input" value="5" min="1" max="50">
+  <label for="ma20Input">MA20:</label>
+  <input type="number" id="ma20Input" value="20" min="1" max="50">
+</div>
+
+<p id="signal">Mengambil data...</p>
+<p id="balance">Saldo Virtual: 1000 USDT</p>
+<button id="followBtn">Ikuti Sinyal Otomatis</button>
+<button id="resetBtn">Reset Saldo</button>
+<button id="exportBtn">Export History CSV</button>
+
+<canvas id="chart" width="400" height="300"></canvas>
+<canvas id="profitChart" width="400" height="150"></canvas>
+
+<audio id="buySound"><source src="https://actions.google.com/sounds/v1/cartoon/clang_and_wobble.ogg" type="audio/ogg"></audio>
+<audio id="sellSound"><source src="https://actions.google.com/sounds/v1/cartoon/slide_whistle.ogg" type="audio/ogg"></audio>
+
+<script>
+let virtualBalance = 1000;
+let followingSignal = false;
+let profitHistory = [];
+let lastSignal = null;
+
+document.getElementById('followBtn').addEventListener('click',()=>{
+  followingSignal = !followingSignal;
+  document.getElementById('followBtn').textContent = followingSignal ? "Berhenti Ikuti Sinyal" : "Ikuti Sinyal Otomatis";
+});
+
+document.getElementById('resetBtn').addEventListener('click',()=>{
+  virtualBalance = 1000;
+  profitHistory = [];
+  document.getElementById('balance').textContent = `Saldo Virtual: ${virtualBalance} USDT`;
+});
+
+document.getElementById('exportBtn').addEventListener('click',()=>{
+  let csv = "No,Saldo\n";
+  profitHistory.forEach((val,i)=>{ csv += `${i+1},${val}\n`; });
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'history_trading.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+const pairSelect = document.getElementById('pairSelect');
+const ma5Input = document.getElementById('ma5Input');
+const ma20Input = document.getElementById('ma20Input');
+
+pairSelect.addEventListener('change',()=>{updateChart();});
+ma5Input.addEventListener('change',()=>{updateChart();});
+ma20Input.addEventListener('change',()=>{updateChart();});
+
+function MA(data, period){
+  let result = [];
+  for(let i=0;i<data.length;i++){
+    if(i+1<period) result.push(null);
+    else { const slice = data.slice(i+1-period,i+1); const avg = slice.reduce((a,b)=>a+b,0)/period; result.push(avg); }
+  }
+  return result;
+}
+
+async function fetchCandles(symbol='BTCUSDT', limit=50){
+  try {
+    const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1m&limit=${limit}`);
+    const data = await res.json();
+    return data.map(item => ({ x:new Date(item[0]), o:parseFloat(item[1]), h:parseFloat(item[2]), l:parseFloat(item[3]), c:parseFloat(item[4]) }));
+  } catch(err){ console.error(err); return []; }
+}
+
+let chart, profitChart;
+
+async function updateChart(){
+  const symbol = pairSelect.value;
+  const ma5Period = parseInt(ma5Input.value);
+  const ma20Period = parseInt(ma20Input.value);
+
+  const candles = await fetchCandles(symbol);
+  if(candles.length===0) return;
+
+  const closes = candles.map(c => c.c);
+  const ma5 = MA(closes,ma5Period);
+  const ma20 = MA(closes,ma20Period);
+
+  const ctx = document.getElementById('chart').getContext('2d');
+  const ctxProfit = document.getElementById('profitChart').getContext('2d');
+
+  if(chart) chart.destroy();
+  if(profitChart) profitChart.destroy();
+
+  chart = new Chart(ctx, {
+    type: 'candlestick',
+    data: {
+      datasets: [{
+        label: symbol,
+        data: candles
+      },{
+        label: 'MA'+ma5Period,
+        type: 'line',
+        data: ma5.map((v,i)=>({x:candles[i].x, y:v})),
+        borderColor: 'blue', borderWidth:1.5, fill:false, spanGaps:true
+      },{
+        label: 'MA'+ma20Period,
+        type: 'line',
+        data: ma20.map((v,i)=>({x:candles[i].x, y:v})),
+        borderColor: 'red', borderWidth:1.5, fill:false, spanGaps:true
+      }]
+    },
+    options:{scales:{x:{ticks:{color:'black'}},y:{ticks:{color:'black'}}}}
+  });
+
+  const lastMA5 = ma5[ma5.length-1];
+  const lastMA20 = ma20[ma20.length-1];
+  const signalEl = document.getElementById('signal');
+  let signal = '⚪ Tunggu';
+  if(lastMA5 && lastMA20){
+    if(lastMA5>lastMA20) signal='📈 Beli';
+    else if(lastMA5<lastMA20) signal='📉 Jual';
+  }
+  signalEl.textContent = `Sinyal: ${signal}`;
+
+  if(signal!==lastSignal){
+    if(signal==='📈 Beli') document.getElementById('buySound').play();
+    if(signal==='📉 Jual') document.getElementById('sellSound').play();
+  }
+
+  if(followingSignal && signal!==lastSignal){
+    if(signal==='📈 Beli') virtualBalance +=10;
+    if(signal==='📉 Jual') virtualBalance -=10;
+    document.getElementById('balance').textContent = `Saldo Virtual: ${virtualBalance} USDT`;
+    profitHistory.push(virtualBalance);
+  }
+
+  profitChart = new Chart(ctxProfit,{ type:'line', data:{ labels: profitHistory.map((_,i)=>i+1), datasets:[{label:'Saldo Virtual', data:profitHistory, borderColor:'lime', borderWidth:2, fill:false}] }, options:{scales:{y:{beginAtZero:false}}} });
+
+  lastSignal = signal;
+  setTimeout(updateChart,60000);
+}
+
+updateChart();
+</script>
+
+</body>
+</html>
